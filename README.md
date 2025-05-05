@@ -53,13 +53,19 @@ Current functionalities include:
 
 ## Roadmap
 
-Planned improvements include:
+### Short to Medium Term
+- Improve movement precision and consistency
+- Fix known bugs in `main_manual_control.py`
+- Optimize `main_relax.py` (motor release routine)
+- Correct CSV data parsing and replay issues in `follow.py`
 
-- Improved error handling for communication
-- Higher-level control features (e.g., trajectory planning)
-- Support for additional interfaces (e.g., graphical UI, joystick)
-- Extended documentation and setup guides
-
+### Long Term
+- Motor position curve visualization
+- 3D virtual environment visualization of the robotic arm
+- Integration of additional sensors:
+  - Pressure sensors
+  - LIDAR or ultrasonic sensors
+  - Camera module
 ## Notes
 
 The repository is currently private but access may be granted on request.  
