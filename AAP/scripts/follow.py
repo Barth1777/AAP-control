@@ -1,85 +1,66 @@
 """
 -- AAP by Barth with SO-100 arm by LEROBOT --
-last update 05/05/2025
+last update 09/05/2025
 program to record a movement and play it back later
              
 """
+import os
+import sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from feurt_driver import FEURTDriver
 from config import MOTOR_LIMITS
-#from core.fonctions import relax_all
+from AAP.core.functions import relax_all, position_0
 from pynput import keyboard
-from scipy.interpolate import UnivariateSpline
+from scipy.interpolate import interp1d
 import pandas as pd
 import numpy as np
-import sys
-import subprocess
 import csv
 import time
-import os
+
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 DATA_FOLDER = "data"
-driver = FEURTDriver()  
+driver = FEURTDriver(command_delay=0)  
 
-
-def relax():
-    motor_ids = [1, 2, 3, 4, 5, 6]  # motor id
-
-    print("[INFO] RELAX ALL : All enines will be released")
-
-    for motor_id in motor_ids:
-        driver.set_torque(motor_id, False)
-        print(f"[INFO] Motor {motor_id} released")
-
-    driver.reconnect()# reconnect driver to get position data
-
-    print("[INFO] All  engines are released")
-
-def traiter_csv(filepath, target_frequency=200, seuil_exces=50, smoothing=1):
+def traitement_csv(filepath, frequency):
     """
-    processes a CSV file :
-    - removes outliers
-    - applies smooth interpolation
-    - re-sampling
-    - rebuilds timetamps
-    - rewritten file
+    Processes a CSV file containing 'time' and 'motor_X':
+    - Smooth cubic interpolation
+    - Resampling at a fixed frequency without changing the total duration
+    - Rounding motor positions to the nearest unit
+    - Saves and overwrites the data
     """
+
+    # load CSV
     df = pd.read_csv(filepath)
     if "time" not in df.columns:
-        raise ValueError("no time column detected.")
+        raise ValueError("File must contain a time column.")
 
     motor_cols = [col for col in df.columns if col.startswith("motor_")]
 
-    # removes outliers
-    for col in motor_cols:
-        diffs = np.abs(np.diff(df[col]))
-        indices = np.where(diffs > seuil_exces)[0] + 1
-        df.loc[indices, col] = np.nan
-        df[col] = df[col].interpolate().bfill().ffill()
+    duration = df["time"].iloc[-1] - df["time"].iloc[0]
+    n_frames = int(duration * frequency)
+    dt = 1.0 / frequency
+    new_times = np.linspace(0, duration, n_frames, endpoint=False)
+    new_times = np.round(new_times, 3)
 
-    # applies smooth interpolation
     df_interp = pd.DataFrame()
-    df_interp["time"] = df["time"]
+    df_interp["time"] = new_times
+
+    # cubic interpolation
     for col in motor_cols:
-        spline = UnivariateSpline(df["time"], df[col], s=smoothing)
-        df_interp[col] = spline(df["time"])
+        interp_func = interp1d(df["time"], df[col], kind="cubic", fill_value="extrapolate")
+        interpolated = interp_func(new_times)
+        df_interp[col] = np.round(interpolated).astype(int)
 
-    # re-sampling
-    duration = df["time"].iloc[-1]  # original actual duration
-    n_frames = int(duration * target_frequency)
-    dt = 1.0 / target_frequency
-    new_times = np.arange(n_frames) * dt  # uniform time
+    # Save
+    df_interp.to_csv(filepath, index=False)
+    print(f"[INFO] : Fichier traité sauvegardé : {filepath}")
+    return filepath
 
-    df_final = pd.DataFrame()
-    df_final["time"] = new_times
-    for col in motor_cols:
-        spline = UnivariateSpline(df["time"], df[col], s=0)
-        df_final[col] = spline(new_times)
-
-    # final rewritten
-    df_final.to_csv(filepath, index=False)
-    print(f"[INFO] rewritten : {filepath}")
-
-def acquisition(driver, frequency=10.0, output_file="acquisition.csv"):
+def acquisition(driver, output_file="acquisition.csv"):
     """
     records engines data between two 'space' press.
     """
@@ -103,7 +84,7 @@ def acquisition(driver, frequency=10.0, output_file="acquisition.csv"):
         while not started:
             time.sleep(0.1)
 
-    interval = 1.0 / frequency
+    interval = 1.0 / 10 # limit motor : 10 Hz
     start_time = time.time()
     rows = []
 
@@ -136,35 +117,44 @@ def acquisition(driver, frequency=10.0, output_file="acquisition.csv"):
 
 def execution(driver, filepath):
     """
-    Replay movment with csv file (time + motor position).
+    Replay a motor movement from a CSV file containing 'time' and 'motor_X' columns.
     """
-    print(f"[INFO] : Reading movment's file : {filepath}")
 
+    print(f"[INFO] : Reading movement file: {filepath}")
+
+    # Load CSV content into memory
     with open(filepath, mode="r") as f:
         reader = csv.DictReader(f)
         sequence = [row for row in reader]
 
     if not sequence:
-        print("[ERROR] No data find.")
+        print("[ERROR] No data found in the file.")
         return
 
-    print(f"[INFO] {len(sequence)} steps loaded. Start movment...")
+    print(f"[INFO] {len(sequence)} steps loaded. Starting movement...")
 
-    start_time = time.time()
+    # Estimate the sampling interval
+    t0 = float(sequence[0]["time"])
+    t1 = float(sequence[1]["time"])
+    dt = t1 - t0                       
+
+    start_time = time.perf_counter()
 
     for i, row in enumerate(sequence):
-        target_time = float(row["time"])
-        now = time.time()
-        delay = target_time - (now - start_time)
-        if delay > 0:
-            time.sleep(delay)
+       
+        t_target = start_time + i * dt
 
+        while time.perf_counter() < t_target:
+            time.sleep(0.0002) 
+
+        # Send motor positions 
         for key, value in row.items():
             if key.startswith("motor_") and value:
                 motor_id = int(key.split("_")[1])
-                driver.move_motor(motor_id, int(float(value)))
+                position = int(float(value))
+                driver.move_motor(motor_id, position)
 
-    print("[INFO] Movment completed.")
+    print("[INFO] Movement completed.")
 
 def list_recordings():
     """
@@ -191,35 +181,37 @@ def main():
 
         if choice == "1":
 
-            # 2. Relax with relax_all
-            relax()
+            # preparation for acquisition
+            position_0(driver)
+            relax_all(driver)
             
-
-            # Acquisition
+            # Get frequency 
             while True:
                 try:
-                    hz = float(input("At what frequency (Hz) ?").strip())
+                    hz = int(input("Restitution frequency (Hz) : "))
+                    if hz <= 0 or hz > 800:
+                        raise ValueError
                     break
                 except ValueError:
-                    print("[ERROR] : Enter valid number")
+                    print("Invalid input. Please enter a positive integer between 1 and 800.")
 
             # temp acquisition 
             temp_file = "temp_acquisition.csv"
-            acquisition(driver, frequency=hz, output_file=temp_file)
+            acquisition(driver, output_file=temp_file)
 
             satis = input("Are you satisfeid ? (y/n) ").strip().lower()
             if satis != "y":
                 print("[INFO] Restart")
                 continue
 
-            name = input("Name of movement :").strip()
+            name = input("Name of movement : ").strip()
             final_path = os.path.join(DATA_FOLDER, name + ".csv")
             os.rename(os.path.join(DATA_FOLDER, temp_file), final_path)
-            #traiter_csv(final_path, target_frequency=hz, seuil_exces=50, smoothing=1)
+            traitement_csv(final_path, frequency=hz)
             print(f"[INFO] Movmement saved as : {final_path}")
 
         elif choice == "2":
-            # Exécution
+            # Execution
 
 
             files = list_recordings()
@@ -227,7 +219,7 @@ def main():
                 print("[INFO] No files found")
                 continue
 
-            name = input("Name of the movement to executed").strip()
+            name = input("Name of the movement to executed ").strip()
             filepath = os.path.join(DATA_FOLDER, name)
             if not filepath.endswith(".csv"):
                 filepath += ".csv"
@@ -235,6 +227,9 @@ def main():
             if not os.path.exists(filepath):
                 print("File not found")
                 continue
+            
+            # preparation for execution
+            position_0(driver)
 
             execution(driver, filepath)
 
